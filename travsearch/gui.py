@@ -8,7 +8,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QScreen, QTextCursor
+from PySide6.QtGui import QColor, QIcon, QMouseEvent, QScreen, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -668,6 +668,12 @@ def run_gui() -> None:
     """Launch the GUI application."""
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # Set application icon (shows in dock/taskbar)
+    icon_path = Path(__file__).parent / "resources" / "icons" / "Icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
     win = SearchWindow()
     win.show()
     sys.exit(app.exec())
