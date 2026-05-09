@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMenu,
     QProgressBar,
@@ -288,18 +287,22 @@ class SearchWindow(QMainWindow):
 
         row = 0
 
-        # Pattern
+        # Pattern (editable combo with history)
         grid.addWidget(field_label("PATTERN"), row, 0, Qt.AlignTop)
-        self.pattern_edit = QLineEdit()
-        self.pattern_edit.setPlaceholderText("text or regex to search for…")
+        self.pattern_edit = QComboBox()
+        self.pattern_edit.setEditable(True)
+        self.pattern_edit.setInsertPolicy(QComboBox.NoInsert)
+        self.pattern_edit.lineEdit().setPlaceholderText("text or regex to search for…")
         grid.addWidget(self.pattern_edit, row, 1, 1, 2)
         row += 1
 
-        # Location
+        # Location (editable combo with history)
         grid.addWidget(field_label("LOCATION"), row, 0, Qt.AlignTop)
         loc_row = QHBoxLayout()
         loc_row.setSpacing(6)
-        self.location_edit = QLineEdit(".")
+        self.location_edit = QComboBox()
+        self.location_edit.setEditable(True)
+        self.location_edit.setInsertPolicy(QComboBox.NoInsert)
         loc_row.addWidget(self.location_edit)
         browse_btn = QPushButton("browse")
         browse_btn.setObjectName("browse-btn")
@@ -309,17 +312,21 @@ class SearchWindow(QMainWindow):
         grid.addLayout(loc_row, row, 1, 1, 2)
         row += 1
 
-        # Include
+        # Include (editable combo with history)
         grid.addWidget(field_label("INCLUDE"), row, 0, Qt.AlignTop)
-        self.include_edit = QLineEdit()
-        self.include_edit.setPlaceholderText("e.g. *.py, *.txt  (blank = *)")
+        self.include_edit = QComboBox()
+        self.include_edit.setEditable(True)
+        self.include_edit.setInsertPolicy(QComboBox.NoInsert)
+        self.include_edit.lineEdit().setPlaceholderText("e.g. *.py, *.txt  (blank = *)")
         grid.addWidget(self.include_edit, row, 1, 1, 2)
         row += 1
 
-        # Exclude
+        # Exclude (editable combo with history)
         grid.addWidget(field_label("EXCLUDE"), row, 0, Qt.AlignTop)
-        self.exclude_edit = QLineEdit()
-        self.exclude_edit.setPlaceholderText("e.g. *.log, node_modules  (blank = exclude nothing)")
+        self.exclude_edit = QComboBox()
+        self.exclude_edit.setEditable(True)
+        self.exclude_edit.setInsertPolicy(QComboBox.NoInsert)
+        self.exclude_edit.lineEdit().setPlaceholderText("e.g. *.log, node_modules  (blank = exclude nothing)")
         grid.addWidget(self.exclude_edit, row, 1, 1, 2)
         row += 1
 
@@ -433,7 +440,7 @@ class SearchWindow(QMainWindow):
         self.clear_btn.clicked.connect(self._clear)
         self.font_slider.valueChanged.connect(self._apply_font_size)
         for widget in (self.pattern_edit, self.location_edit, self.include_edit, self.exclude_edit):
-            widget.textChanged.connect(self._update_preview)
+            widget.editTextChanged.connect(self._update_preview)
         for widget in (
             self.mode_combo,
             self.plaintext_chk,
@@ -453,10 +460,19 @@ class SearchWindow(QMainWindow):
     def _restore_settings(self):
         s = self._settings
         self.font_slider.setValue(int(s.value("font_size", 4)))
-        self.pattern_edit.setText(s.value("pattern", ""))
-        self.location_edit.setText(s.value("location", "."))
-        self.include_edit.setText(s.value("include", ""))
-        self.exclude_edit.setText(s.value("exclude", ""))
+
+        # Restore combo box histories and current values
+        for combo, history_key, value_key, default in [
+            (self.pattern_edit, "pattern_history", "pattern", ""),
+            (self.location_edit, "location_history", "location", "."),
+            (self.include_edit, "include_history", "include", ""),
+            (self.exclude_edit, "exclude_history", "exclude", ""),
+        ]:
+            history = s.value(history_key, [])
+            if isinstance(history, list):
+                combo.addItems(history)
+            combo.setEditText(s.value(value_key, default))
+
         idx = self.mode_combo.findText(s.value("mode", "content"))
         if idx >= 0:
             self.mode_combo.setCurrentIndex(idx)
@@ -479,10 +495,18 @@ class SearchWindow(QMainWindow):
     def _save_settings(self):
         s = self._settings
         s.setValue("font_size", self.font_slider.value())
-        s.setValue("pattern", self.pattern_edit.text())
-        s.setValue("location", self.location_edit.text())
-        s.setValue("include", self.include_edit.text())
-        s.setValue("exclude", self.exclude_edit.text())
+
+        # Save combo box histories and current values
+        for combo, history_key, value_key in [
+            (self.pattern_edit, "pattern_history", "pattern"),
+            (self.location_edit, "location_history", "location"),
+            (self.include_edit, "include_history", "include"),
+            (self.exclude_edit, "exclude_history", "exclude"),
+        ]:
+            history = [combo.itemText(i) for i in range(combo.count())]
+            s.setValue(history_key, history)
+            s.setValue(value_key, combo.currentText())
+
         s.setValue("mode", self.mode_combo.currentText())
         s.setValue("plaintext", self.plaintext_chk.isChecked())
         s.setValue("case_sensitive", self.case_sensitive_chk.isChecked())
@@ -496,18 +520,41 @@ class SearchWindow(QMainWindow):
         self._save_settings()
         super().closeEvent(event)
 
+    def _add_to_history(self, combo: QComboBox, value: str, max_items: int = 20) -> None:
+        """Add value to combo history, moving it to top if duplicate, limiting to max_items."""
+        if not value.strip():
+            return
+        # Remove existing occurrence if present
+        idx = combo.findText(value)
+        if idx >= 0:
+            combo.removeItem(idx)
+        # Insert at top
+        combo.insertItem(0, value)
+        # Remove excess items
+        while combo.count() > max_items:
+            combo.removeItem(combo.count() - 1)
+        # Keep the current text
+        combo.setEditText(value)
+
+    def _save_histories(self) -> None:
+        """Save current field values to their histories (called on RUN)."""
+        self._add_to_history(self.pattern_edit, self.pattern_edit.currentText())
+        self._add_to_history(self.location_edit, self.location_edit.currentText())
+        self._add_to_history(self.include_edit, self.include_edit.currentText())
+        self._add_to_history(self.exclude_edit, self.exclude_edit.currentText())
+
     def _apply_font_size(self, value: int):
         self.setStyleSheet(render_style(value))
 
     def _current_args(self) -> SearchArgs:
         return SearchArgs(
-            pattern=self.pattern_edit.text(),
+            pattern=self.pattern_edit.currentText(),
             search_mode=SearchMode(self.mode_combo.currentText()),
             plaintext=self.plaintext_chk.isChecked(),
             case_sensitive=self.case_sensitive_chk.isChecked(),
-            include=self.include_edit.text(),
-            exclude=self.exclude_edit.text(),
-            location=self.location_edit.text() or ".",
+            include=self.include_edit.currentText(),
+            exclude=self.exclude_edit.currentText(),
+            location=self.location_edit.currentText() or ".",
             recursive=self.recursive_chk.isChecked(),
             search_office=self.office_chk.isChecked(),
             search_pdf=self.pdf_chk.isChecked(),
@@ -533,9 +580,9 @@ class SearchWindow(QMainWindow):
             )
 
     def _browse(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select folder", self.location_edit.text() or ".")
+        folder = QFileDialog.getExistingDirectory(self, "Select folder", self.location_edit.currentText() or ".")
         if folder:
-            self.location_edit.setText(folder)
+            self.location_edit.setEditText(folder)
 
     def _clear(self):
         self.output_edit.clear()
@@ -555,10 +602,13 @@ class SearchWindow(QMainWindow):
         if self._worker:
             self._worker.stop()
 
-        pattern = self.pattern_edit.text().strip()
+        pattern = self.pattern_edit.currentText().strip()
         if not pattern:
             self._append_error("No pattern entered.")
             return
+
+        # Save current values to history
+        self._save_histories()
 
         args = self._current_args()
 

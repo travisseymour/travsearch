@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from jinja2 import Template
 
 # Jinja2 stylesheet template — uses {{ }} for variables, { } is literal CSS
@@ -57,7 +59,17 @@ QComboBox {
     min-width: 120px;
 }
 QComboBox:focus { border: 1px solid #38bdf8; }
-QComboBox::drop-down { border: none; width: 20px; }
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 24px;
+    border-left: 1px solid #2d3748;
+}
+QComboBox::down-arrow {
+    image: url({{ arrow_path }});
+    width: 10px;
+    height: 6px;
+}
 QComboBox QAbstractItemView {
     background: #1e2333;
     border: 1px solid #38bdf8;
@@ -171,8 +183,11 @@ QSlider#font-slider::sub-page:horizontal {
 # Base font sizes (at slider value 0)
 _BASE_SIZES = {"sz1": 22, "sz2": 13, "sz3": 12, "sz4": 11}
 
+# Path to arrow image
+_ARROW_PATH = Path(__file__).parent / "arrow_down.svg"
+
 
 def render_style(slider_value: int) -> str:
     """Render the stylesheet with the given font size offset."""
     sizes = {k: v + slider_value for k, v in _BASE_SIZES.items()}
-    return Template(_STYLE_TEMPLATE).render(**sizes)
+    return Template(_STYLE_TEMPLATE).render(**sizes, arrow_path=_ARROW_PATH.as_posix())
