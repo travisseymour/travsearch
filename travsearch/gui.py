@@ -365,10 +365,12 @@ class SearchWindow(QMainWindow):
         outer.addLayout(grid)
         outer.addSpacing(16)
 
-        # Command preview
+        # Command preview (selectable for copying)
         self.cmd_label = QLabel()
         self.cmd_label.setObjectName("cmd-preview")
         self.cmd_label.setWordWrap(True)
+        self.cmd_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.cmd_label.setCursor(Qt.IBeamCursor)
         outer.addWidget(self.cmd_label)
         outer.addSpacing(8)
 

@@ -16,7 +16,11 @@ from .extractors import (
 from .models import SearchArgs
 
 
-def enumerate_files(args: SearchArgs, on_error: Callable[[str], None] | None = None) -> list[Path]:
+def enumerate_files(
+    args: SearchArgs,
+    on_error: Callable[[str], None] | None = None,
+    stop_event: threading.Event | None = None,
+) -> list[Path]:
     """Use fd to build the full file list. Returns list of Paths."""
     fd = shutil.which("fd") or shutil.which("fdfind")
     if fd is None:
@@ -51,12 +55,30 @@ def enumerate_files(args: SearchArgs, on_error: Callable[[str], None] | None = N
 
     cmd.append(args.location)
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode not in (0, 1) and on_error:
-        on_error(f"fd error (exit {result.returncode}): {result.stderr.strip()}")
-    if result.stderr.strip() and on_error:
-        on_error(f"fd warning: {result.stderr.strip()}")
-    paths = [Path(p) for p in result.stdout.splitlines() if p.strip()]
+    # Use Popen to allow interruption via stop_event
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    paths: list[Path] = []
+    try:
+        for line in proc.stdout:
+            if stop_event is not None and stop_event.is_set():
+                proc.terminate()
+                proc.wait()
+                return paths
+            if line.strip():
+                paths.append(Path(line.strip()))
+        proc.wait()
+        if proc.returncode not in (0, 1) and on_error:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            on_error(f"fd error (exit {proc.returncode}): {stderr.strip()}")
+        if proc.stderr:
+            stderr = proc.stderr.read()
+            if stderr.strip() and on_error:
+                on_error(f"fd warning: {stderr.strip()}")
+    except Exception as e:
+        proc.terminate()
+        proc.wait()
+        if on_error:
+            on_error(f"fd error: {e}")
     return paths
 
 
@@ -159,10 +181,15 @@ def run_search(
     All callbacks are invoked from worker threads — callers must be thread-safe.
     """
     try:
-        files = enumerate_files(args, on_error)
+        files = enumerate_files(args, on_error, stop_event)
     except FileNotFoundError as e:
         on_error(f"ERROR: {e}")
         on_done(0, 0)
+        return
+
+    # Check if stop was requested during enumeration
+    if stop_event.is_set():
+        on_done(0, len(files))
         return
 
     total = len(files)
@@ -217,16 +244,11 @@ def build_filename_cmd(args: SearchArgs) -> list[str]:
     if not args.recursive:
         cmd += ["--max-depth", "1"]
 
-    # Include patterns (comma-separated); default to * if blank
-    include_patterns = [p.strip() for p in args.include.split(",") if p.strip()]
-    if not include_patterns:
-        include_patterns = ["*"]
-    for pattern in include_patterns:
-        cmd += ["--glob", pattern]
-
     # Exclude patterns (comma-separated)
     for pattern in (p.strip() for p in args.exclude.split(",") if p.strip()):
         cmd += ["--exclude", pattern]
 
+    # In filename mode, the search pattern itself filters filenames,
+    # so include patterns are not needed (and --glob was being misused)
     cmd += [args.pattern, args.location]
     return cmd
