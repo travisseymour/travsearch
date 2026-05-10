@@ -2,6 +2,10 @@
 
 A GUI application for searching filenames or file content using `fd` and `rg` (ripgrep).
 
+[![TravSearch UI](travsearch/travsearch_ui.png)](travsearch/travsearch_ui.png)
+
+---
+
 ## Features
 
 - **Content search**: Search inside files using ripgrep
@@ -23,6 +27,7 @@ sudo apt install fd-find
 ```
 
 > On Debian/Ubuntu the binary is called `fdfind`. You may want to alias it:
+>
 > ```bash
 > echo 'alias fd=fdfind' >> ~/.bashrc && source ~/.bashrc
 > ```
