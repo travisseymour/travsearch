@@ -1,6 +1,6 @@
 # TravSearch
 
-A PySide6 GUI application for searching filenames or file content using `fd` and `rg` (ripgrep).
+A GUI application for searching filenames or file content using `fd` and `rg` (ripgrep).
 
 ## Features
 
@@ -14,7 +14,7 @@ A PySide6 GUI application for searching filenames or file content using `fd` and
 
 ## System Dependencies
 
-TravSearch wraps several command-line tools. Install them before running:
+TravSearch wraps multiple command-line tools. Install them before running:
 
 ### 1. `fd` — fast filename search
 
@@ -46,7 +46,7 @@ sudo apt install poppler-utils
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/travsearch.git
+git clone https://github.com/travisseymour/travsearch.git
 cd travsearch
 
 # Install with uv

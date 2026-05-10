@@ -18,5 +18,8 @@
     "titleBar.inactiveBackground": "#ceea7599",
     "titleBar.inactiveForeground": "#15202b99"
   },
-  "peacock.color": "#ceea75"
+  "peacock.color": "#ceea75",
+  "cSpell.words": [
+    "Trav"
+  ]
 }
