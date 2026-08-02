@@ -286,7 +286,7 @@ class SearchWindow(QMainWindow):
 
         self.reset_btn = QPushButton("reset")
         self.reset_btn.setObjectName("reset-btn")
-        self.reset_btn.setFixedWidth(60)
+        self.reset_btn.setFixedWidth(90)
         self.reset_btn.setToolTip("Reset all fields to defaults")
         self.reset_btn.clicked.connect(self._reset_all)
         header_row.addWidget(self.reset_btn, alignment=Qt.AlignBottom)

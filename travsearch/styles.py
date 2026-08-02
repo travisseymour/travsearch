@@ -165,7 +165,7 @@ QPushButton#reset-btn {
     color: #475569;
     border: 1px solid #2d3748;
     border-radius: 4px;
-    padding: 4px 8px;
+    padding: 5px 8px;
     font-size: {{ sz4 }}px;
 }
 QPushButton#reset-btn:hover { color: #fbbf24; border-color: #fbbf24; }
