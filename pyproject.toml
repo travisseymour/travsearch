@@ -1,6 +1,6 @@
 [project]
 name = "travsearch"
-version = "2026.8.2.1"
+version = "2026.8.2.2"
 description = "GUI to Search filenames or file content using fd and rg utilities."
 readme = "README.md"
 authors = [{name = "Travis L. Seymour, PhD", email = "nogard@ucsc.edu"}]
@@ -24,9 +24,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["travsearch"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"travsearch/resources" = "travsearch/resources"
 
 [dependency-groups]
 dev = [
