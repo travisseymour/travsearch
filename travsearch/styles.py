@@ -150,6 +150,25 @@ QPushButton#stop-btn {
 }
 QPushButton#stop-btn:hover { background: #f87171; color: #0f1117; }
 QPushButton#stop-btn:disabled { color: #2d3748; border-color: #2d3748; background: transparent; }
+QPushButton#clear-field-btn {
+    background: transparent;
+    color: #475569;
+    border: 1px solid #2d3748;
+    border-radius: 4px;
+    padding: 0px;
+    font-size: {{ sz2 }}px;
+    font-weight: bold;
+}
+QPushButton#clear-field-btn:hover { color: #f87171; border-color: #f87171; }
+QPushButton#reset-btn {
+    background: transparent;
+    color: #475569;
+    border: 1px solid #2d3748;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: {{ sz4 }}px;
+}
+QPushButton#reset-btn:hover { color: #fbbf24; border-color: #fbbf24; }
 QTextEdit#output {
     background: #080b10;
     border: 1px solid #1e2333;

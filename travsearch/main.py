@@ -16,15 +16,19 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-from .gui import run_gui
 import os
+from pathlib import Path
+
+from .gui import run_gui
 
 os.environ.setdefault("QT_LOGGING_RULES", "qt.text.font.db=false")
 
 
 def main() -> None:
     """Entry point for the travsearch application."""
-    run_gui()
+    # Capture current working directory before Qt changes it
+    cwd = str(Path.cwd())
+    run_gui(initial_location=cwd)
 
 
 if __name__ == "__main__":

@@ -244,7 +244,7 @@ class FdWorker(QObject):
 class SearchWindow(QMainWindow):
     """Main application window."""
 
-    def __init__(self):
+    def __init__(self, initial_location: str | None = None):
         super().__init__()
         self.setWindowTitle(f"TravSearch! (v{version('travsearch')})")
         self.setMinimumSize(1024, 768)
@@ -255,6 +255,9 @@ class SearchWindow(QMainWindow):
         self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self._build_ui()
         self._restore_settings()
+        # Override location with command-line working directory if provided
+        if initial_location:
+            self.location_edit.setEditText(initial_location)
         self._apply_font_size(self.font_slider.value())
 
     def _build_ui(self):
@@ -280,6 +283,14 @@ class SearchWindow(QMainWindow):
 
         header_row.addLayout(title_col)
         header_row.addStretch()
+
+        self.reset_btn = QPushButton("reset")
+        self.reset_btn.setObjectName("reset-btn")
+        self.reset_btn.setFixedWidth(60)
+        self.reset_btn.setToolTip("Reset all fields to defaults")
+        self.reset_btn.clicked.connect(self._reset_all)
+        header_row.addWidget(self.reset_btn, alignment=Qt.AlignBottom)
+        header_row.addSpacing(10)
 
         self.font_slider = QSlider(Qt.Horizontal)
         self.font_slider.setObjectName("font-slider")
@@ -307,11 +318,20 @@ class SearchWindow(QMainWindow):
 
         # Pattern (editable combo with history)
         grid.addWidget(field_label("PATTERN"), row, 0, Qt.AlignTop)
+        pattern_row = QHBoxLayout()
+        pattern_row.setSpacing(6)
         self.pattern_edit = QComboBox()
         self.pattern_edit.setEditable(True)
         self.pattern_edit.setInsertPolicy(QComboBox.NoInsert)
         self.pattern_edit.lineEdit().setPlaceholderText("text or regex to search for…")
-        grid.addWidget(self.pattern_edit, row, 1, 1, 2)
+        pattern_row.addWidget(self.pattern_edit)
+        self.pattern_clear_btn = QPushButton("×")
+        self.pattern_clear_btn.setObjectName("clear-field-btn")
+        self.pattern_clear_btn.setFixedWidth(28)
+        self.pattern_clear_btn.setToolTip("Clear pattern")
+        self.pattern_clear_btn.clicked.connect(lambda: self.pattern_edit.setEditText(""))
+        pattern_row.addWidget(self.pattern_clear_btn)
+        grid.addLayout(pattern_row, row, 1, 1, 2)
         row += 1
 
         # Location (editable combo with history)
@@ -327,25 +347,49 @@ class SearchWindow(QMainWindow):
         browse_btn.setFixedWidth(100)
         browse_btn.clicked.connect(self._browse)
         loc_row.addWidget(browse_btn)
+        self.location_clear_btn = QPushButton("×")
+        self.location_clear_btn.setObjectName("clear-field-btn")
+        self.location_clear_btn.setFixedWidth(28)
+        self.location_clear_btn.setToolTip("Clear location (reset to home)")
+        self.location_clear_btn.clicked.connect(lambda: self.location_edit.setEditText(str(Path.home())))
+        loc_row.addWidget(self.location_clear_btn)
         grid.addLayout(loc_row, row, 1, 1, 2)
         row += 1
 
         # Include (editable combo with history)
         grid.addWidget(field_label("INCLUDE"), row, 0, Qt.AlignTop)
+        include_row = QHBoxLayout()
+        include_row.setSpacing(6)
         self.include_edit = QComboBox()
         self.include_edit.setEditable(True)
         self.include_edit.setInsertPolicy(QComboBox.NoInsert)
         self.include_edit.lineEdit().setPlaceholderText("e.g. *.py, *.txt  (blank = *)")
-        grid.addWidget(self.include_edit, row, 1, 1, 2)
+        include_row.addWidget(self.include_edit)
+        self.include_clear_btn = QPushButton("×")
+        self.include_clear_btn.setObjectName("clear-field-btn")
+        self.include_clear_btn.setFixedWidth(28)
+        self.include_clear_btn.setToolTip("Clear include")
+        self.include_clear_btn.clicked.connect(lambda: self.include_edit.setEditText(""))
+        include_row.addWidget(self.include_clear_btn)
+        grid.addLayout(include_row, row, 1, 1, 2)
         row += 1
 
         # Exclude (editable combo with history)
         grid.addWidget(field_label("EXCLUDE"), row, 0, Qt.AlignTop)
+        exclude_row = QHBoxLayout()
+        exclude_row.setSpacing(6)
         self.exclude_edit = QComboBox()
         self.exclude_edit.setEditable(True)
         self.exclude_edit.setInsertPolicy(QComboBox.NoInsert)
         self.exclude_edit.lineEdit().setPlaceholderText("e.g. *.log, node_modules  (blank = exclude nothing)")
-        grid.addWidget(self.exclude_edit, row, 1, 1, 2)
+        exclude_row.addWidget(self.exclude_edit)
+        self.exclude_clear_btn = QPushButton("×")
+        self.exclude_clear_btn.setObjectName("clear-field-btn")
+        self.exclude_clear_btn.setFixedWidth(28)
+        self.exclude_clear_btn.setToolTip("Clear exclude")
+        self.exclude_clear_btn.clicked.connect(lambda: self.exclude_edit.setEditText(""))
+        exclude_row.addWidget(self.exclude_clear_btn)
+        grid.addLayout(exclude_row, row, 1, 1, 2)
         row += 1
 
         # Mode
@@ -610,6 +654,22 @@ class SearchWindow(QMainWindow):
         self.progress_label.setText("")
         self.status_label.setText("ready")
 
+    def _reset_all(self):
+        """Reset all fields to their default values."""
+        self.pattern_edit.setEditText("")
+        self.location_edit.setEditText(str(Path.home()))
+        self.include_edit.setEditText("")
+        self.exclude_edit.setEditText("")
+        idx = self.mode_combo.findText("filename")
+        if idx >= 0:
+            self.mode_combo.setCurrentIndex(idx)
+        self.plaintext_chk.setChecked(True)
+        self.case_sensitive_chk.setChecked(False)
+        self.recursive_chk.setChecked(True)
+        self.office_chk.setChecked(False)
+        self.pdf_chk.setChecked(False)
+        self.filenames_chk.setChecked(True)
+
     def _stop(self):
         if self._worker:
             self._worker.stop()
@@ -734,7 +794,7 @@ class SearchWindow(QMainWindow):
         self._worker = None
 
 
-def run_gui() -> None:
+def run_gui(initial_location: str | None = None) -> None:
     """Launch the GUI application."""
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
@@ -744,6 +804,6 @@ def run_gui() -> None:
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    win = SearchWindow()
+    win = SearchWindow(initial_location=initial_location)
     win.show()
     sys.exit(app.exec())
