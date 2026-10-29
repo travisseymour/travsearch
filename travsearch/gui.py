@@ -775,6 +775,13 @@ class SearchWindow(QMainWindow):
             return
         self._last_progress_time = now
 
+        if total == 0:
+            # Indeterminate phase (single rg text search)
+            self.progress_bar.setRange(0, 0)
+            self.progress_label.setText(path)
+            return
+
+        # Determinate phase (extractable file search)
         if self.progress_bar.maximum() != total:
             self.progress_bar.setRange(0, total)
         self.progress_bar.setValue(n)

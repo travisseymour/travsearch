@@ -4,6 +4,7 @@
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,154 @@ from .extractors import (
     extract_pdf_text,
 )
 from .models import SearchArgs
+
+_RG_OUTPUT_RE = re.compile(r"^(.+?):(\d+):")
+_STAT_FILES_SEARCHED = re.compile(r"(\d+) files searched")
+_STAT_FILES_MATCHED = re.compile(r"(\d+) files contained matches")
+
+
+def _build_rg_cmd(args: SearchArgs) -> list[str]:
+    """Build a single rg command for directory-wide text search."""
+    rg = shutil.which("rg")
+    if rg is None:
+        raise FileNotFoundError("'rg' not found — install ripgrep: sudo apt install ripgrep")
+    cmd = [
+        rg,
+        "--no-heading",
+        "--with-filename",
+        "--line-number",
+        "--color=never",
+        "--stats",
+        "--hidden",
+        "--no-ignore",
+    ]
+    if args.plaintext:
+        cmd.append("--fixed-strings")
+    if not args.case_sensitive:
+        cmd.append("--ignore-case")
+    if not args.recursive:
+        cmd += ["--max-depth", "1"]
+
+    # Include patterns (comma-separated); default to searching everything
+    include_patterns = [p.strip() for p in args.include.split(",") if p.strip()]
+    for pattern in include_patterns:
+        cmd += ["--glob", pattern]
+
+    # Exclude patterns (comma-separated)
+    for pattern in (p.strip() for p in args.exclude.split(",") if p.strip()):
+        cmd += ["--glob", f"!{pattern}"]
+
+    # Exclude extractable formats (they are searched separately via text extraction)
+    for suffix in OFFICE_SUFFIXES:
+        cmd += ["--glob", f"!*{suffix}"]
+    for suffix in PDF_SUFFIXES:
+        cmd += ["--glob", f"!*{suffix}"]
+
+    cmd += [args.pattern, args.location]
+    return cmd
+
+
+def _run_rg_phase(
+    args: SearchArgs,
+    on_progress: Callable[[int, int, str], None],
+    on_match: Callable[[str, str, str], None],
+    on_error: Callable[[str], None],
+    stop_event: threading.Event,
+) -> tuple[int, int]:
+    """Run a single rg process on the search directory. Returns (matched_files, total_searched)."""
+    try:
+        cmd = _build_rg_cmd(args)
+    except FileNotFoundError as e:
+        on_error(f"ERROR: {e}")
+        return 0, 0
+
+    on_progress(0, 0, "searching text files…")
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    matched_files: set[str] = set()
+    try:
+        for raw_line in proc.stdout:
+            if stop_event.is_set():
+                proc.terminate()
+                proc.wait()
+                return len(matched_files), 0
+            line = raw_line.rstrip("\n")
+            if not line:
+                continue
+            # rg output: filepath:linenum:content
+            m = _RG_OUTPUT_RE.match(line)
+            fp = m.group(1) if m else ""
+            if fp:
+                matched_files.add(fp)
+            on_match(fp, line, line)
+        proc.wait()
+    except OSError as e:
+        proc.terminate()
+        proc.wait()
+        on_error(f"rg error: {e}")
+        return len(matched_files), 0
+
+    # Parse stats from stderr
+    stderr = proc.stderr.read() if proc.stderr else ""
+    total_searched = 0
+    total_matched = len(matched_files)
+    m = _STAT_FILES_SEARCHED.search(stderr)
+    if m:
+        total_searched = int(m.group(1))
+    m = _STAT_FILES_MATCHED.search(stderr)
+    if m:
+        total_matched = int(m.group(1))
+
+    if proc.returncode > 1:
+        # rg returns 1 for no match, 2+ for errors
+        on_error(f"rg error (exit {proc.returncode}): {stderr.strip()}")
+
+    return total_matched, total_searched
+
+
+def _run_extractable_phase(
+    files: list[Path],
+    args: SearchArgs,
+    on_progress: Callable[[int, int, str], None],
+    on_match: Callable[[str, str, str], None],
+    on_error: Callable[[str], None],
+    stop_event: threading.Event,
+    num_workers: int = 8,
+) -> tuple[int, int]:
+    """Search office/PDF files using extraction + thread pool. Returns (matched_files, total)."""
+    total = len(files)
+    if total == 0:
+        return 0, 0
+
+    matched: set[str] = set()
+    matched_lock = threading.Lock()
+
+    def worker(item: tuple[int, Path]) -> None:
+        file_num, path = item
+        if stop_event.is_set():
+            return
+
+        def _on_match(fp: str, line: str, raw: str) -> None:
+            with matched_lock:
+                matched.add(fp)
+            on_match(fp, line, raw)
+
+        search_file(path, args, file_num, total, on_progress, _on_match, on_error, stop_event)
+
+    pool = ThreadPoolExecutor(max_workers=num_workers)
+    try:
+        futs = [pool.submit(worker, (i + 1, p)) for i, p in enumerate(files)]
+        for fut in as_completed(futs):
+            if stop_event.is_set():
+                break
+            try:
+                fut.result()
+            except (OSError, RuntimeError) as e:
+                on_error(str(e))
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    return len(matched), total
 
 
 def enumerate_files(
@@ -179,59 +328,50 @@ def run_search(
     on_error: Callable[[str], None],
     on_done: Callable[[int, int], None],
     stop_event: threading.Event,
-    num_workers: int = 16,
+    num_workers: int = 8,
 ) -> None:
     """
-    Enumerate files with fd, then search each in a thread pool.
+    Two-phase content search:
+      Phase 1 — single rg invocation for text files (fast).
+      Phase 2 — thread-pool extraction + rg for office/PDF files.
     All callbacks are invoked from worker threads — callers must be thread-safe.
     """
-    try:
-        files = enumerate_files(args, on_error, stop_event)
-    except FileNotFoundError as e:
-        on_error(f"ERROR: {e}")
-        on_done(0, 0)
-        return
+    # Phase 1: single rg for text files
+    rg_matched, rg_total = _run_rg_phase(args, on_progress, on_match, on_error, stop_event)
 
-    # Check if stop was requested during enumeration
     if stop_event.is_set():
-        on_done(0, len(files))
+        on_done(rg_matched, rg_total)
         return
 
-    total = len(files)
-    if total == 0:
-        on_error("fd found 0 files to search — check your location and glob settings")
-        on_done(0, 0)
-        return
-    matched: set[str] = set()
-    matched_lock = threading.Lock()
-
-    def worker(item: tuple[int, Path]) -> None:
-        file_num, path = item
-        if stop_event.is_set():
+    # Phase 2: extractable files (office/PDF)
+    ext_matched = 0
+    ext_total = 0
+    if args.search_office or args.search_pdf:
+        on_progress(0, 0, "scanning office/PDF files…")
+        try:
+            all_files = enumerate_files(args, on_error, stop_event)
+        except FileNotFoundError as e:
+            on_error(f"ERROR: {e}")
+            on_done(rg_matched, rg_total)
             return
 
-        def _on_match(fp: str, line: str, raw: str) -> None:
-            with matched_lock:
-                matched.add(fp)
-            on_match(fp, line, raw)
+        if stop_event.is_set():
+            on_done(rg_matched, rg_total)
+            return
 
-        search_file(path, args, file_num, total, on_progress, _on_match, on_error, stop_event)
+        target_suffixes = set()
+        if args.search_office:
+            target_suffixes |= set(OFFICE_SUFFIXES.keys())
+        if args.search_pdf:
+            target_suffixes |= PDF_SUFFIXES
+        extractable = [f for f in all_files if f.suffix.lower() in target_suffixes]
 
-    pool = ThreadPoolExecutor(max_workers=num_workers)
-    try:
-        futs = [pool.submit(worker, (i + 1, p)) for i, p in enumerate(files)]
+        if extractable and not stop_event.is_set():
+            ext_matched, ext_total = _run_extractable_phase(
+                extractable, args, on_progress, on_match, on_error, stop_event, num_workers
+            )
 
-        for fut in as_completed(futs):
-            if stop_event.is_set():
-                break
-            try:
-                fut.result()
-            except (OSError, RuntimeError) as e:
-                on_error(str(e))
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
-
-    on_done(len(matched), total)
+    on_done(rg_matched + ext_matched, rg_total + ext_total)
 
 
 def build_filename_cmd(args: SearchArgs) -> list[str]:
