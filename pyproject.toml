@@ -1,6 +1,6 @@
 [project]
 name = "travsearch"
-version = "2026.10.29.5"
+version = "2026.10.29.6"
 description = "GUI to Search filenames or file content using fd and rg utilities."
 readme = "README.md"
 authors = [{name = "Travis L. Seymour, PhD", email = "nogard@ucsc.edu"}]

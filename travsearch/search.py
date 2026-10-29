@@ -83,6 +83,7 @@ def _run_rg_phase(
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     matched_files: set[str] = set()
+    tail_lines: list[str] = []  # collect non-match lines (stats may appear on stdout)
     try:
         for raw_line in proc.stdout:
             if stop_event.is_set():
@@ -92,12 +93,14 @@ def _run_rg_phase(
             line = raw_line.rstrip("\n")
             if not line:
                 continue
-            # rg output: filepath:linenum:content
+            # rg output: filepath:linenum:content — only emit actual matches
             m = _RG_OUTPUT_RE.match(line)
-            fp = m.group(1) if m else ""
-            if fp:
+            if m:
+                fp = m.group(1)
                 matched_files.add(fp)
-            on_match(fp, line, line)
+                on_match(fp, line, line)
+            else:
+                tail_lines.append(line)
         proc.wait()
     except OSError as e:
         proc.terminate()
@@ -105,14 +108,15 @@ def _run_rg_phase(
         on_error(f"rg error: {e}")
         return len(matched_files), 0
 
-    # Parse stats from stderr
+    # Parse stats — rg may write them to stderr or stdout depending on version
     stderr = proc.stderr.read() if proc.stderr else ""
+    stats_text = stderr + "\n" + "\n".join(tail_lines)
     total_searched = 0
     total_matched = len(matched_files)
-    m = _STAT_FILES_SEARCHED.search(stderr)
+    m = _STAT_FILES_SEARCHED.search(stats_text)
     if m:
         total_searched = int(m.group(1))
-    m = _STAT_FILES_MATCHED.search(stderr)
+    m = _STAT_FILES_MATCHED.search(stats_text)
     if m:
         total_matched = int(m.group(1))
 
