@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 
-from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QIcon, QScreen
 from PySide6.QtWidgets import (
     QApplication,
@@ -49,46 +49,57 @@ _RG_LINE_RE = re.compile(r"^(.+?):(\d+):")
 _FILEPATH_ROLE = Qt.UserRole + 1
 _LINENUM_ROLE = Qt.UserRole + 2
 _CONTENT_ROLE = Qt.UserRole + 3
+_STACKED_ROLE = Qt.UserRole + 4
 
 
 class ResultDelegate(QStyledItemDelegate):
-    """Draws each result row: filepath in blue, then match content in gray."""
+    """Draws each result row with filepath in blue and match content in gray."""
 
     def paint(self, painter, option, index):
         painter.save()
-        # Draw selection/hover background
         self.initStyleOption(option, index)
         style = option.widget.style() if option.widget else QApplication.style()
         style.drawPrimitive(QStyle.PE_PanelItemViewItem, option, painter, option.widget)
 
         filepath = index.data(_FILEPATH_ROLE) or ""
         content = index.data(_CONTENT_ROLE) or ""
+        stacked = index.data(_STACKED_ROLE) or False
 
         rect = option.rect.adjusted(6, 2, -6, -2)
         fm = painter.fontMetrics()
+        line_h = fm.height()
 
-        # Draw filepath in blue
-        painter.setPen(QColor("#38bdf8"))
-        if content:
-            fp_display = filepath + " "
-        else:
-            fp_display = filepath
-        painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, fp_display)
-
-        # Draw content in dark gray after filepath
-        if content:
-            fp_width = fm.horizontalAdvance(fp_display)
-            content_rect = rect.adjusted(fp_width, 0, 0, 0)
+        if stacked and content:
+            # Two-line layout: filepath on top, content below
+            top_rect = rect.adjusted(0, 0, 0, -(rect.height() - line_h))
+            bot_rect = rect.adjusted(12, line_h + 1, 0, 0)
+            painter.setPen(QColor("#38bdf8"))
+            elided_fp = fm.elidedText(filepath, Qt.ElideMiddle, top_rect.width())
+            painter.drawText(top_rect, Qt.AlignLeft | Qt.AlignTop, elided_fp)
             painter.setPen(QColor("#64748b"))
-            elided = fm.elidedText(content, Qt.ElideRight, content_rect.width())
-            painter.drawText(content_rect, Qt.AlignLeft | Qt.AlignVCenter, elided)
+            elided_ct = fm.elidedText(content, Qt.ElideRight, bot_rect.width())
+            painter.drawText(bot_rect, Qt.AlignLeft | Qt.AlignTop, elided_ct)
+        else:
+            # Single-line layout: filepath then content inline
+            painter.setPen(QColor("#38bdf8"))
+            fp_display = (filepath + " ") if content else filepath
+            painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, fp_display)
+            if content:
+                fp_width = fm.horizontalAdvance(fp_display)
+                content_rect = rect.adjusted(fp_width, 0, 0, 0)
+                painter.setPen(QColor("#64748b"))
+                elided = fm.elidedText(content, Qt.ElideRight, content_rect.width())
+                painter.drawText(content_rect, Qt.AlignLeft | Qt.AlignVCenter, elided)
 
         painter.restore()
 
     def sizeHint(self, option, index):
-        hint = super().sizeHint(option, index)
-        hint.setHeight(max(hint.height(), option.fontMetrics.height() + 6))
-        return hint
+        content = index.data(_CONTENT_ROLE) or ""
+        stacked = index.data(_STACKED_ROLE) or False
+        line_h = option.fontMetrics.height()
+        if stacked and content:
+            return QSize(0, line_h * 2 + 7)
+        return QSize(0, line_h + 6)
 
 
 class ResultList(QListWidget):
@@ -418,6 +429,11 @@ class SearchWindow(QMainWindow):
         self.content_radio.setChecked(True)
         opts_row.addWidget(self.content_radio)
         opts_row.addWidget(self.filenames_radio)
+        opts_row.addSpacing(16)
+        self.stacked_chk = QCheckBox("stacked")
+        self.stacked_chk.setToolTip("Show match text on a separate line below the filepath")
+        self.stacked_chk.setChecked(False)
+        opts_row.addWidget(self.stacked_chk)
         opts_row.addStretch()
         grid.addLayout(opts_row, row, 1, 1, 2)
         row += 1
@@ -503,6 +519,7 @@ class SearchWindow(QMainWindow):
             self.pdf_chk,
             self.filenames_radio,
             self.content_radio,
+            self.stacked_chk,
         ):
             if hasattr(widget, "currentTextChanged"):
                 widget.currentTextChanged.connect(self._update_preview)
@@ -510,6 +527,7 @@ class SearchWindow(QMainWindow):
                 widget.toggled.connect(self._update_preview)
             else:
                 widget.stateChanged.connect(self._update_preview)
+        self.stacked_chk.stateChanged.connect(self._relayout_results)
 
         self._update_preview()
 
@@ -541,6 +559,7 @@ class SearchWindow(QMainWindow):
             self.filenames_radio.setChecked(True)
         else:
             self.content_radio.setChecked(True)
+        self.stacked_chk.setChecked(s.value("stacked", False, type=bool))
         geometry = s.value("window_geometry")
         if geometry:
             self.restoreGeometry(geometry)
@@ -573,6 +592,7 @@ class SearchWindow(QMainWindow):
         s.setValue("search_office", self.office_chk.isChecked())
         s.setValue("search_pdf", self.pdf_chk.isChecked())
         s.setValue("filenames_only", self.filenames_radio.isChecked())
+        s.setValue("stacked", self.stacked_chk.isChecked())
         s.setValue("window_geometry", self.saveGeometry())
 
     def closeEvent(self, event):
@@ -673,6 +693,7 @@ class SearchWindow(QMainWindow):
         self.office_chk.setChecked(False)
         self.pdf_chk.setChecked(False)
         self.filenames_radio.setChecked(True)
+        self.stacked_chk.setChecked(False)
 
     def _stop(self):
         if self._worker:
@@ -794,10 +815,19 @@ class SearchWindow(QMainWindow):
         item.setData(_FILEPATH_ROLE, filepath)
         item.setData(_LINENUM_ROLE, linenum)
         item.setData(_CONTENT_ROLE, content)
-        # Set display text for accessibility / search
+        item.setData(_STACKED_ROLE, self.stacked_chk.isChecked())
         item.setText(f"{filepath} {content}" if content else filepath)
         self.result_list.addItem(item)
         self.result_list.scrollToBottom()
+
+    def _relayout_results(self):
+        """Update stacked flag on all existing items and refresh the list."""
+        stacked = self.stacked_chk.isChecked()
+        for i in range(self.result_list.count()):
+            item = self.result_list.item(i)
+            item.setData(_STACKED_ROLE, stacked)
+        # Force delegate to recalculate sizes
+        self.result_list.doItemsLayout()
 
     def _append_output(self, line: str):
         self._add_result_item(line, "")
