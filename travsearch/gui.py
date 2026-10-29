@@ -1,32 +1,17 @@
-"""
-TravSearch: GUI to Search filenames or file content using fd and rg utilities.
-Copyright (C) 2026  Travis L. Seymour, PhD
+# SPDX-FileCopyrightText: TravSearch | Copyright (c) 2026 Travis L. Seymour, PhD <nogard@ucsc.edu>
+# SPDX-License-Identifier: GPL-3.0-or-later
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""
-
+from importlib.metadata import version
+from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
-from importlib.metadata import version
-from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QIcon, QMouseEvent, QScreen, QTextCursor
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QScreen
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -36,12 +21,16 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSlider,
-    QTextEdit,
+    QStyle,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
@@ -57,57 +46,69 @@ SETTINGS_APP = "travsearch"
 _RG_LINE_RE = re.compile(r"^(.+?):(\d+):")
 
 
-class ClickableOutput(QTextEdit):
-    """QTextEdit that opens files on double-click when not searching."""
+_FILEPATH_ROLE = Qt.UserRole + 1
+_LINENUM_ROLE = Qt.UserRole + 2
+_CONTENT_ROLE = Qt.UserRole + 3
+
+
+class ResultDelegate(QStyledItemDelegate):
+    """Draws each result row: filepath in blue, then match content in gray."""
+
+    def paint(self, painter, option, index):
+        painter.save()
+        # Draw selection/hover background
+        self.initStyleOption(option, index)
+        style = option.widget.style() if option.widget else QApplication.style()
+        style.drawPrimitive(QStyle.PE_PanelItemViewItem, option, painter, option.widget)
+
+        filepath = index.data(_FILEPATH_ROLE) or ""
+        content = index.data(_CONTENT_ROLE) or ""
+
+        rect = option.rect.adjusted(6, 2, -6, -2)
+        fm = painter.fontMetrics()
+
+        # Draw filepath in blue
+        painter.setPen(QColor("#38bdf8"))
+        if content:
+            fp_display = filepath + " "
+        else:
+            fp_display = filepath
+        painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, fp_display)
+
+        # Draw content in dark gray after filepath
+        if content:
+            fp_width = fm.horizontalAdvance(fp_display)
+            content_rect = rect.adjusted(fp_width, 0, 0, 0)
+            painter.setPen(QColor("#64748b"))
+            elided = fm.elidedText(content, Qt.ElideRight, content_rect.width())
+            painter.drawText(content_rect, Qt.AlignLeft | Qt.AlignVCenter, elided)
+
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        hint.setHeight(max(hint.height(), option.fontMetrics.height() + 6))
+        return hint
+
+
+class ResultList(QListWidget):
+    """QListWidget that opens files on double-click and has a context menu."""
 
     def __init__(self, parent: "SearchWindow"):
         super().__init__(parent)
         self._search_window = parent
+        self.setItemDelegate(ResultDelegate(self))
+        self.itemDoubleClicked.connect(self._on_double_click)
 
-    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        # Only handle when search is not running (run button enabled means ready)
+    def _on_double_click(self, item: QListWidgetItem):
         if not self._search_window.run_btn.isEnabled():
-            super().mouseDoubleClickEvent(event)
             return
-
-        # Get the line under cursor
-        cursor = self.cursorForPosition(event.pos())
-        cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-        line = cursor.selectedText().strip()
-
-        if not line:
-            super().mouseDoubleClickEvent(event)
-            return
-
-        # Try to parse filepath:linenum from the line
-        filepath, linenum = self._parse_line(line)
+        filepath = item.data(_FILEPATH_ROLE)
+        linenum = item.data(_LINENUM_ROLE)
         if filepath and Path(filepath).exists():
             self._open_file(filepath, linenum)
-        else:
-            super().mouseDoubleClickEvent(event)
-
-    def _parse_line(self, line: str) -> tuple[str | None, int | None]:
-        """Extract filepath and line number from a result line."""
-        # Try rg format: /path/to/file:123:content
-        match = _RG_LINE_RE.match(line)
-        if match:
-            return match.group(1), int(match.group(2))
-
-        # Maybe it's just a filepath (filename mode or filenames-only)
-        # Check if the whole line looks like a path
-        if "/" in line or line.startswith("."):
-            # Could have :linenum at end without content
-            if ":" in line:
-                parts = line.rsplit(":", 1)
-                if parts[1].isdigit():
-                    return parts[0], int(parts[1])
-            return line, None
-
-        return None, None
 
     def _open_file(self, filepath: str, linenum: int | None) -> None:
-        """Open a file, preferring editors that support line numbers."""
-        # Try VS Code first (supports goto line)
         code = shutil.which("code")
         if code:
             if linenum:
@@ -115,54 +116,40 @@ class ClickableOutput(QTextEdit):
             else:
                 subprocess.Popen([code, filepath])
             return
-
-        # Fall back to xdg-open
         xdg = shutil.which("xdg-open")
         if xdg:
             subprocess.Popen([xdg, filepath])
 
     def _open_folder(self, filepath: str) -> None:
-        """Open the folder containing the file."""
         folder = str(Path(filepath).parent)
         xdg = shutil.which("xdg-open")
         if xdg:
             subprocess.Popen([xdg, folder])
 
     def contextMenuEvent(self, event) -> None:
-        # Only show custom menu when search is not running
         if not self._search_window.run_btn.isEnabled():
             super().contextMenuEvent(event)
             return
-
-        # Get the line under cursor
-        cursor = self.cursorForPosition(event.pos())
-        cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-        line = cursor.selectedText().strip()
-
-        filepath, linenum = self._parse_line(line)
+        item = self.itemAt(event.pos())
+        if not item:
+            super().contextMenuEvent(event)
+            return
+        filepath = item.data(_FILEPATH_ROLE)
+        linenum = item.data(_LINENUM_ROLE)
         if not filepath or not Path(filepath).exists():
             super().contextMenuEvent(event)
             return
 
-        # Build context menu
         menu = QMenu(self)
-
-        # Open file action
         if linenum:
             open_action = menu.addAction(f"Open file at line {linenum}")
         else:
             open_action = menu.addAction("Open file")
-
-        # Open folder action
         folder_action = menu.addAction("Open containing folder")
-
-        # Copy path action
         copy_action = menu.addAction("Copy path")
-
         menu.addSeparator()
         menu.addAction("Cancel")
 
-        # Show menu and handle selection
         action = menu.exec(event.globalPos())
         if action == open_action:
             self._open_file(filepath, linenum)
@@ -233,7 +220,7 @@ class FdWorker(QObject):
                 self.output.emit(line.rstrip())
             proc.wait()
             self.finished.emit(0, 0)
-        except Exception as e:
+        except OSError as e:
             self.error.emit(str(e))
             self.finished.emit(0, 0)
 
@@ -252,6 +239,10 @@ class SearchWindow(QMainWindow):
         self._thread = None
         self._seen_files: set[str] = set()
         self._last_progress_time: float = 0.0
+        self._match_buffer: list[tuple[str, str]] = []
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setInterval(50)
+        self._flush_timer.timeout.connect(self._flush_matches)
         self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self._build_ui()
         self._restore_settings()
@@ -399,9 +390,9 @@ class SearchWindow(QMainWindow):
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["content", "filename"])
         mode_row.addWidget(self.mode_combo)
-        self.plaintext_chk = QCheckBox("plain text  (uncheck for regex)")
-        self.plaintext_chk.setChecked(True)
-        mode_row.addWidget(self.plaintext_chk)
+        self.regex_chk = QCheckBox("regex")
+        self.regex_chk.setChecked(False)
+        mode_row.addWidget(self.regex_chk)
         self.case_sensitive_chk = QCheckBox("case sensitive")
         self.case_sensitive_chk.setChecked(False)
         mode_row.addWidget(self.case_sensitive_chk)
@@ -416,17 +407,17 @@ class SearchWindow(QMainWindow):
         self.recursive_chk = QCheckBox("recursive")
         self.office_chk = QCheckBox("office docs")
         self.pdf_chk = QCheckBox("PDFs")
-        self.filenames_chk = QCheckBox("filenames only")
         self.recursive_chk.setChecked(True)
         self.office_chk.setChecked(True)
         self.pdf_chk.setChecked(True)
-        for chk in (
-            self.recursive_chk,
-            self.office_chk,
-            self.pdf_chk,
-            self.filenames_chk,
-        ):
+        for chk in (self.recursive_chk, self.office_chk, self.pdf_chk):
             opts_row.addWidget(chk)
+        opts_row.addSpacing(16)
+        self.content_radio = QRadioButton("show filenames && match text")
+        self.filenames_radio = QRadioButton("show filenames")
+        self.content_radio.setChecked(True)
+        opts_row.addWidget(self.content_radio)
+        opts_row.addWidget(self.filenames_radio)
         opts_row.addStretch()
         grid.addLayout(opts_row, row, 1, 1, 2)
         row += 1
@@ -484,11 +475,10 @@ class SearchWindow(QMainWindow):
         outer.addWidget(div)
         outer.addSpacing(10)
 
-        # Output (clickable - double-click opens file)
-        self.output_edit = ClickableOutput(self)
-        self.output_edit.setObjectName("output")
-        self.output_edit.setReadOnly(True)
-        outer.addWidget(self.output_edit, stretch=1)
+        # Output (clickable list - double-click opens file)
+        self.result_list = ResultList(self)
+        self.result_list.setObjectName("result-list")
+        outer.addWidget(self.result_list, stretch=1)
 
         # Status
         outer.addSpacing(6)
@@ -505,15 +495,18 @@ class SearchWindow(QMainWindow):
             widget.editTextChanged.connect(self._update_preview)
         for widget in (
             self.mode_combo,
-            self.plaintext_chk,
+            self.regex_chk,
             self.case_sensitive_chk,
             self.recursive_chk,
             self.office_chk,
             self.pdf_chk,
-            self.filenames_chk,
+            self.filenames_radio,
+            self.content_radio,
         ):
             if hasattr(widget, "currentTextChanged"):
                 widget.currentTextChanged.connect(self._update_preview)
+            elif hasattr(widget, "toggled"):
+                widget.toggled.connect(self._update_preview)
             else:
                 widget.stateChanged.connect(self._update_preview)
 
@@ -538,12 +531,15 @@ class SearchWindow(QMainWindow):
         idx = self.mode_combo.findText(s.value("mode", "content"))
         if idx >= 0:
             self.mode_combo.setCurrentIndex(idx)
-        self.plaintext_chk.setChecked(s.value("plaintext", True, type=bool))
+        self.regex_chk.setChecked(not s.value("plaintext", True, type=bool))
         self.case_sensitive_chk.setChecked(s.value("case_sensitive", False, type=bool))
         self.recursive_chk.setChecked(s.value("recursive", True, type=bool))
         self.office_chk.setChecked(s.value("search_office", True, type=bool))
         self.pdf_chk.setChecked(s.value("search_pdf", True, type=bool))
-        self.filenames_chk.setChecked(s.value("filenames_only", False, type=bool))
+        if s.value("filenames_only", False, type=bool):
+            self.filenames_radio.setChecked(True)
+        else:
+            self.content_radio.setChecked(True)
         geometry = s.value("window_geometry")
         if geometry:
             self.restoreGeometry(geometry)
@@ -570,12 +566,12 @@ class SearchWindow(QMainWindow):
             s.setValue(value_key, combo.currentText())
 
         s.setValue("mode", self.mode_combo.currentText())
-        s.setValue("plaintext", self.plaintext_chk.isChecked())
+        s.setValue("plaintext", not self.regex_chk.isChecked())
         s.setValue("case_sensitive", self.case_sensitive_chk.isChecked())
         s.setValue("recursive", self.recursive_chk.isChecked())
         s.setValue("search_office", self.office_chk.isChecked())
         s.setValue("search_pdf", self.pdf_chk.isChecked())
-        s.setValue("filenames_only", self.filenames_chk.isChecked())
+        s.setValue("filenames_only", self.filenames_radio.isChecked())
         s.setValue("window_geometry", self.saveGeometry())
 
     def closeEvent(self, event):
@@ -612,15 +608,15 @@ class SearchWindow(QMainWindow):
         return SearchArgs(
             pattern=self.pattern_edit.currentText(),
             search_mode=SearchMode(self.mode_combo.currentText()),
-            plaintext=self.plaintext_chk.isChecked(),
+            plaintext=not self.regex_chk.isChecked(),
             case_sensitive=self.case_sensitive_chk.isChecked(),
             include=self.include_edit.currentText(),
             exclude=self.exclude_edit.currentText(),
-            location=self.location_edit.currentText() or ".",
+            location=self.location_edit.lineEdit().text().strip() or ".",
             recursive=self.recursive_chk.isChecked(),
             search_office=self.office_chk.isChecked(),
             search_pdf=self.pdf_chk.isChecked(),
-            filenames_only=self.filenames_chk.isChecked(),
+            filenames_only=self.filenames_radio.isChecked(),
         )
 
     def _update_preview(self, *_):
@@ -647,8 +643,9 @@ class SearchWindow(QMainWindow):
             self.location_edit.setEditText(folder)
 
     def _clear(self):
-        self.output_edit.clear()
+        self.result_list.clear()
         self._seen_files.clear()
+        self._match_buffer.clear()
         self.progress_bar.setValue(0)
         self.progress_bar.setRange(0, 1)
         self.progress_label.setText("")
@@ -663,16 +660,19 @@ class SearchWindow(QMainWindow):
         idx = self.mode_combo.findText("filename")
         if idx >= 0:
             self.mode_combo.setCurrentIndex(idx)
-        self.plaintext_chk.setChecked(True)
+        self.regex_chk.setChecked(False)
         self.case_sensitive_chk.setChecked(False)
         self.recursive_chk.setChecked(True)
         self.office_chk.setChecked(False)
         self.pdf_chk.setChecked(False)
-        self.filenames_chk.setChecked(True)
+        self.filenames_radio.setChecked(True)
 
     def _stop(self):
         if self._worker:
             self._worker.stop()
+            # Force-kill any subprocess the worker thread may be blocking on
+            if self._thread and self._thread.isRunning():
+                self._thread.requestInterruption()
         self.stop_btn.setEnabled(False)
         self.status_label.setText("stopped")
 
@@ -697,14 +697,14 @@ class SearchWindow(QMainWindow):
             except FileNotFoundError as e:
                 self._append_error(str(e))
                 return
-            self.output_edit.clear()
+            self.result_list.clear()
             self._seen_files.clear()
-            self._append_line("$ " + " ".join(cmd), color="#334155")
-            self._append_line("", color="#334155")
+            self._match_buffer.clear()
             self.status_label.setText("searching…")
             self.run_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             self.progress_bar.setRange(0, 0)
+            self._flush_timer.start()
 
             self._thread = QThread()
             self._worker = FdWorker(cmd)
@@ -718,8 +718,9 @@ class SearchWindow(QMainWindow):
             return
 
         # Content mode: full pipeline with progress
-        self.output_edit.clear()
+        self.result_list.clear()
         self._seen_files.clear()
+        self._match_buffer.clear()
         self._last_progress_time = 0.0
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setValue(0)
@@ -727,6 +728,7 @@ class SearchWindow(QMainWindow):
         self.status_label.setText("searching…")
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self._flush_timer.start()
 
         self._thread = QThread()
         self._worker = SearchWorker(args)
@@ -752,30 +754,60 @@ class SearchWindow(QMainWindow):
         self.progress_label.setText(f"[{n}/{total}]  {short}")
 
     def _on_match(self, fp: str, line: str):
-        if self.filenames_chk.isChecked():
-            if fp and fp not in self._seen_files:
-                self._seen_files.add(fp)
-                self._append_line(fp, color="#a3e635")
-        else:
-            self._append_line(line, color="#a3e635")
+        self._match_buffer.append((fp, line))
 
-    def _append_line(self, text: str, color: str = "#a3e635"):
-        cursor = self.output_edit.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        fmt = cursor.charFormat()
-        fmt.setForeground(QColor(color))
-        cursor.setCharFormat(fmt)
-        cursor.insertText(text + "\n")
-        self.output_edit.setTextCursor(cursor)
-        self.output_edit.ensureCursorVisible()
+    def _flush_matches(self):
+        if not self._match_buffer:
+            return
+        batch = self._match_buffer[:200]
+        self._match_buffer = self._match_buffer[200:]
+        show_filenames = self.filenames_radio.isChecked()
+        for fp, line in batch:
+            if show_filenames:
+                if fp and fp not in self._seen_files:
+                    self._seen_files.add(fp)
+                    self._add_result_item(fp, "")
+            else:
+                self._add_result_item(fp, line)
+
+    def _add_result_item(self, fp: str, line: str):
+        """Add a result to the list widget. Parses filepath:linenum:content from line."""
+        filepath = fp
+        linenum = None
+        content = ""
+        if line:
+            m = _RG_LINE_RE.match(line)
+            if m:
+                filepath = m.group(1)
+                linenum = int(m.group(2))
+                content = line[m.end() :]
+            else:
+                content = line
+        item = QListWidgetItem()
+        item.setData(_FILEPATH_ROLE, filepath)
+        item.setData(_LINENUM_ROLE, linenum)
+        item.setData(_CONTENT_ROLE, content)
+        # Set display text for accessibility / search
+        item.setText(f"{filepath} {content}" if content else filepath)
+        self.result_list.addItem(item)
+        self.result_list.scrollToBottom()
 
     def _append_output(self, line: str):
-        self._append_line(line, color="#a3e635")
+        self._add_result_item(line, "")
 
     def _append_error(self, line: str):
-        self._append_line(line, color="#f87171")
+        item = QListWidgetItem()
+        item.setData(_FILEPATH_ROLE, "")
+        item.setData(_LINENUM_ROLE, None)
+        item.setData(_CONTENT_ROLE, line)
+        item.setForeground(QColor("#f87171"))
+        self.result_list.addItem(item)
 
     def _on_finished(self, matched: int, total: int):
+        self._flush_timer.stop()
+        # Flush any remaining buffered matches
+        while self._match_buffer:
+            self._flush_matches()
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         if total > 0:
@@ -784,8 +816,6 @@ class SearchWindow(QMainWindow):
             self.progress_label.setText(f"[{total}/{total}]  done")
             summary = f"{matched} match(es) found across {total} file(s) searched"
             self.status_label.setText(summary)
-            color = "#a3e635" if matched > 0 else "#475569"
-            self._append_line(f"\n─── {summary} ───", color=color)
         else:
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)

@@ -1,26 +1,11 @@
-"""
-TravSearch: GUI to Search filenames or file content using fd and rg utilities.
-Copyright (C) 2026  Travis L. Seymour, PhD
+# SPDX-FileCopyrightText: TravSearch | Copyright (c) 2026 Travis L. Seymour, PhD <nogard@ucsc.edu>
+# SPDX-License-Identifier: GPL-3.0-or-later
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""
-
+from pathlib import Path
 import re
 import shutil
 import subprocess
 import zipfile
-from pathlib import Path
 
 # Office formats that are zip-based; map suffix -> xml path inside the zip
 OFFICE_SUFFIXES: dict[str, str] = {
@@ -128,7 +113,7 @@ def extract_office_text(path: Path) -> str | None:
                     raw = zf.read(name).decode("utf-8", errors="replace")
                     parts.append(_TAG_RE.sub(" ", raw))
             return "\n".join(parts) if parts else None
-    except Exception:
+    except (OSError, zipfile.BadZipFile, KeyError, UnicodeDecodeError):
         return None
 
 
@@ -143,7 +128,8 @@ def extract_pdf_text(path: Path) -> str | None:
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,
         )
         return result.stdout if result.returncode == 0 else None
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired):
         return None

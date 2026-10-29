@@ -1,28 +1,13 @@
-"""
-TravSearch: GUI to Search filenames or file content using fd and rg utilities.
-Copyright (C) 2026  Travis L. Seymour, PhD
+# SPDX-FileCopyrightText: TravSearch | Copyright (c) 2026 Travis L. Seymour, PhD <nogard@ucsc.edu>
+# SPDX-License-Identifier: GPL-3.0-or-later
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""
-
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
-from typing import Callable
 
 from .extractors import (
     BINARY_SUFFIXES,
@@ -92,7 +77,7 @@ def enumerate_files(
             stderr = proc.stderr.read()
             if stderr.strip() and on_error:
                 on_error(f"fd warning: {stderr.strip()}")
-    except Exception as e:
+    except OSError as e:
         proc.terminate()
         proc.wait()
         if on_error:
@@ -138,6 +123,7 @@ def search_file(
                 rg_cmd + [args.pattern, tf_path],
                 capture_output=True,
                 text=True,
+                check=False,
             )
             for line in proc.stdout.splitlines():
                 if stop_event.is_set():
@@ -146,13 +132,13 @@ def search_file(
                 on_match(label, display, line)
             if proc.returncode > 1:
                 on_error(f"{label}: rg error: {proc.stderr.strip()}")
-        except Exception as e:
+        except OSError as e:
             on_error(f"{label}: {e}")
         finally:
             if tf_path:
                 try:
                     Path(tf_path).unlink(missing_ok=True)
-                except Exception:
+                except OSError:
                     pass
 
     def run_rg_direct(p: Path) -> None:
@@ -161,6 +147,7 @@ def search_file(
                 rg_cmd + [args.pattern, str(p)],
                 capture_output=True,
                 text=True,
+                check=False,
             )
             for line in proc.stdout.splitlines():
                 if stop_event.is_set():
@@ -168,7 +155,7 @@ def search_file(
                 on_match(str(p), line, line)
             if proc.returncode > 1:
                 on_error(f"{p}: rg error: {proc.stderr.strip()}")
-        except Exception as e:
+        except OSError as e:
             on_error(f"{p}: {e}")
 
     if suffix in OFFICE_SUFFIXES:
@@ -239,7 +226,7 @@ def run_search(
                 break
             try:
                 fut.result()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 on_error(str(e))
     finally:
         pool.shutdown(wait=False, cancel_futures=True)

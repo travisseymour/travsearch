@@ -1,10 +1,10 @@
 [project]
 name = "travsearch"
-version = "2026.8.2.3"
+version = "2026.10.29.1"
 description = "GUI to Search filenames or file content using fd and rg utilities."
 readme = "README.md"
 authors = [{name = "Travis L. Seymour, PhD", email = "nogard@ucsc.edu"}]
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12,<3.15"
 license = "MIT"
 dependencies = [
     "PySide6>=6.6",
