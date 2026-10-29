@@ -141,33 +141,53 @@ class ResultList(QListWidget):
         if not self._search_window.run_btn.isEnabled():
             super().contextMenuEvent(event)
             return
+
         item = self.itemAt(event.pos())
-        if not item:
-            super().contextMenuEvent(event)
-            return
-        filepath = item.data(_FILEPATH_ROLE)
-        linenum = item.data(_LINENUM_ROLE)
-        if not filepath or not Path(filepath).exists():
+        filepath = item.data(_FILEPATH_ROLE) if item else ""
+        linenum = item.data(_LINENUM_ROLE) if item else None
+        has_valid_file = bool(filepath and Path(filepath).exists())
+
+        menu = QMenu(self)
+        open_action = folder_action = copy_action = None
+        if has_valid_file:
+            if linenum:
+                open_action = menu.addAction(f"Open file at line {linenum}")
+            else:
+                open_action = menu.addAction("Open file")
+            folder_action = menu.addAction("Open containing folder")
+            copy_action = menu.addAction("Copy path")
+
+        copy_all_action = None
+        if self.count() > 0:
+            if has_valid_file:
+                menu.addSeparator()
+            copy_all_action = menu.addAction("Copy all results")
+
+        if not has_valid_file and self.count() == 0:
             super().contextMenuEvent(event)
             return
 
-        menu = QMenu(self)
-        if linenum:
-            open_action = menu.addAction(f"Open file at line {linenum}")
-        else:
-            open_action = menu.addAction("Open file")
-        folder_action = menu.addAction("Open containing folder")
-        copy_action = menu.addAction("Copy path")
         menu.addSeparator()
         menu.addAction("Cancel")
 
         action = menu.exec(event.globalPos())
-        if action == open_action:
+        if action == open_action and open_action:
             self._open_file(filepath, linenum)
-        elif action == folder_action:
+        elif action == folder_action and folder_action:
             self._open_folder(filepath)
-        elif action == copy_action:
+        elif action == copy_action and copy_action:
             QApplication.clipboard().setText(filepath)
+        elif action == copy_all_action and copy_all_action:
+            self._copy_all_results()
+
+    def _copy_all_results(self) -> None:
+        lines = []
+        for i in range(self.count()):
+            item = self.item(i)
+            text = item.text()
+            if text:
+                lines.append(text)
+        QApplication.clipboard().setText("\n".join(lines))
 
 
 class SearchWorker(QObject):
@@ -249,6 +269,7 @@ class SearchWindow(QMainWindow):
         self._worker = None
         self._thread = None
         self._seen_files: set[str] = set()
+        self._search_start_time: float = 0.0
         self._last_progress_time: float = 0.0
         self._match_buffer: list[tuple[str, str]] = []
         self._flush_timer = QTimer(self)
@@ -728,6 +749,7 @@ class SearchWindow(QMainWindow):
             self.result_list.clear()
             self._seen_files.clear()
             self._match_buffer.clear()
+            self._search_start_time = time.time()
             self.status_label.setText("searching…")
             self.run_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
@@ -749,6 +771,7 @@ class SearchWindow(QMainWindow):
         self.result_list.clear()
         self._seen_files.clear()
         self._match_buffer.clear()
+        self._search_start_time = time.time()
         self._last_progress_time = 0.0
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setValue(0)
@@ -852,19 +875,20 @@ class SearchWindow(QMainWindow):
         # Flush any remaining buffered matches
         while self._match_buffer:
             self._flush_matches()
+        elapsed = time.time() - self._search_start_time
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         if total > 0:
             self.progress_bar.setRange(0, total)
             self.progress_bar.setValue(total)
             self.progress_label.setText(f"[{total}/{total}]  done")
-            summary = f"{matched} match(es) found across {total} file(s) searched"
+            summary = f"{matched} match(es) found across {total} file(s) searched  ({elapsed:.2f}s)"
             self.status_label.setText(summary)
         else:
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self.progress_label.setText("")
-            self.status_label.setText("done")
+            self.status_label.setText(f"done  ({elapsed:.2f}s)")
         self._worker = None
 
 
