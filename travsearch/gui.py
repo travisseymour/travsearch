@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 
-from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QIcon, QScreen
 from PySide6.QtWidgets import (
     QApplication,
@@ -493,6 +493,7 @@ class SearchWindow(QMainWindow):
         self.font_slider.valueChanged.connect(self._apply_font_size)
         for widget in (self.pattern_edit, self.location_edit, self.include_edit, self.exclude_edit):
             widget.editTextChanged.connect(self._update_preview)
+        self.location_edit.editTextChanged.connect(self._clean_location_uri)
         for widget in (
             self.mode_combo,
             self.regex_chk,
@@ -636,6 +637,12 @@ class SearchWindow(QMainWindow):
                 f"$ {fd} --type f{include_part}{exclude_part} {args.location} | "
                 f"{rg} {'--fixed-strings ' if args.plaintext else ''}[pattern] <file>"
             )
+
+    def _clean_location_uri(self, text: str):
+        """Strip file:// URI prefix if a folder was dragged into the location field."""
+        url = QUrl(text)
+        if url.isLocalFile():
+            self.location_edit.setEditText(url.toLocalFile())
 
     def _browse(self):
         folder = QFileDialog.getExistingDirectory(self, "Select folder", self.location_edit.currentText() or ".")
